@@ -11,7 +11,7 @@ on:
       - 'requirements.txt'
       - '.github/workflows/upload_otzaria_dataset.yml'
   schedule:
-    - cron: '17 2 * * 1,4'
+    - cron: '23 2 * * 1,4'
   workflow_dispatch:
     inputs:
       otzaria_release:
@@ -45,6 +45,8 @@ env:
   OTZARIA_LEGACY_RELEASE: "library-141"
   OTZARIA_LEGACY_ARCHIVE: "otzaria_library_141.zip"
   OTZARIA_LEGACY_MANIFEST: "files_manifest_141.json"
+  # Last complete published build had 9,362 rows. Reject clearly partial builds.
+  OTZARIA_MIN_RECORDS: "8000"
 
 jobs:
   build-and-upload-otzaria:
@@ -140,6 +142,25 @@ jobs:
             --parquet-target-file-size-mb "$TARGET_FILE_SIZE_MB" \
             --github-release "${{ steps.release.outputs.tag }}" \
             --batch-size 512
+
+      - name: Verify complete Parquet dataset before publishing
+        if: ${{ steps.release.outputs.should_run == 'true' }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import pyarrow.parquet as pq
+
+          shard_dir = Path(os.environ["OTZARIA_PARQUET_OUTPUT_DIR"])
+          shards = sorted(shard_dir.glob("*.parquet"))
+          if not shards:
+              raise SystemExit("No Parquet shards produced; refusing to overwrite the dataset")
+          total_rows = sum(pq.ParquetFile(path).metadata.num_rows for path in shards)
+          min_rows = int(os.environ["OTZARIA_MIN_RECORDS"])
+          print(f"Validated {len(shards)} Parquet shards containing {total_rows:,} rows")
+          if total_rows < min_rows:
+              raise SystemExit(f"Only {total_rows:,} rows; expected at least {min_rows:,}")
+          PY
 
       - name: Upload Parquet files to Hugging Face
         if: ${{ steps.release.outputs.should_run == 'true' }}

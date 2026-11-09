@@ -24,22 +24,37 @@ def upload_directory(
     if not local_dir.is_dir():
         raise ValueError(f"The provided local path '{local_dir}' is not a directory.")
 
-    resolved_api = api or HfApi(token=hf_token)
+    # Upload replacements and delete obsolete shards in the same Hub commit.
+    # Deleting first would leave the published dataset empty if the upload fails.
+    upload_kwargs = {
+        "folder_path": str(local_dir),
+        "path_in_repo": path_in_repo,
+        "repo_id": repo_id,
+        "repo_type": "dataset",
+        "commit_message": commit_message,
+    }
     if delete_patterns:
-        resolved_api.delete_files(
-            repo_id=repo_id,
-            delete_patterns=delete_patterns,
-            repo_type="dataset",
-            commit_message=f"Delete old files before upload: {commit_message}",
-        )
+        if not any(local_dir.glob("*.parquet")):
+            raise ValueError("No local Parquet files: refusing to replace remote dataset")
 
-    resolved_api.upload_folder(
-        folder_path=str(local_dir),
-        path_in_repo=path_in_repo,
-        repo_id=repo_id,
-        repo_type="dataset",
-        commit_message=commit_message,
-    )
+        # HfApi.upload_folder expects delete patterns relative to path_in_repo.
+        prefix = path_in_repo.strip("/")
+        relative_patterns = []
+        for pattern in delete_patterns:
+            if prefix:
+                expected_prefix = f"{prefix}/"
+                if not pattern.startswith(expected_prefix):
+                    raise ValueError(
+                        f"Delete pattern {pattern!r} is outside destination {prefix!r}"
+                    )
+                pattern = pattern[len(expected_prefix):]
+            if not pattern:
+                raise ValueError("Delete pattern cannot be empty")
+            relative_patterns.append(pattern)
+        upload_kwargs["delete_patterns"] = relative_patterns
+
+    resolved_api = api or HfApi(token=hf_token)
+    resolved_api.upload_folder(**upload_kwargs)
 
 
 def main():
